@@ -1,0 +1,570 @@
+---
+title: "Machine LearningL"
+author: "Lechen Tan"
+date: "2/18/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+#All libraries needed.
+library('tidyverse') 
+library('scales')
+library('mice')
+library('randomForest')
+library('caret')
+library('glmnet')
+library('e1071')
+library('rpart')
+library('pls')
+```
+
+```{r}
+sum(duplicated(full))
+```
+
+
+Part 1: Reading in the Data and Exploratory Data Analysis
+```{r}
+#Read in train and test data:
+training <- read.csv("/Users/apple/Desktop/ML Project/adult.data",header=FALSE)
+colnames(training) <- c("age","workclass","fnlwgt","education","education.num","marital.status","occupation","relationship","race","sex","capital.gain","capital.loss","hours.per.week","native.country","income")
+
+testing  <- read.csv('/Users/apple/Desktop/ML Project/adult.test',header=FALSE,skip = 1)
+colnames(testing) <- c("age","workclass","fnlwgt","education","education.num","marital.status","occupation","relationship","race","sex","capital.gain","capital.loss","hours.per.week","native.country","income")
+
+levels(testing$income) <-c(" <=50K"," >50K")
+levels(testing$native.country) <- levels(training$native.country)
+
+#rows
+nrow(training)
+nrow(testing)
+
+train=1:32561
+test=-(train)
+
+#full dataset
+full  <- bind_rows(training, test)
+
+str(full)
+
+#Correlation
+#check for duplicates
+#Check correlation with Income
+#Dropping,Creating, Converting
+#Outliers detection: never drop outliers unless it's data input problem
+# Other method includes: log transformation, binning, droping, triming, replacing, (winsorizing)
+#interaction term
+#encoding method
+#standardizing method
+#adjust
+#binning age, fnlwgt, hours_per_week
+#grouping workclass, education,marital_status,occupation,relationship, race, regrouping of native.country
+```
+
+```{r}
+#Count of NAs
+sapply(full,function(x)sum(is.na(x)))
+```
+
+
+```{r}
+#Table of categorical variables:
+sapply(full,function(x)if(is.factor(x))table(x))
+
+```
+
+```{r}
+#Histogram of age:
+hist(full$age)
+
+```
+```{r}
+#Histogram of final weight:
+hist(full$fnlwgt)
+```
+
+```{r}
+#Histogram of education.num
+hist(full$education.num)
+```
+
+```{r}
+#Histogram of hour.per.week
+hist(full$hours.per.week)
+```
+```{r}
+#Table of whether there is capital gain or loss versus income
+table(full$capital.gain==0,full$income)
+table(full$capital.loss==0,full$income)
+```
+
+
+Part 2: Data Preprocessing
+```{r}
+
+#convert unknown to NA
+full$workclass <- na_if(full$workclass,' ?')
+full$occupation <- na_if(full$occupation,' ?')
+full$native.country <- na_if(full$native.country,' ?')
+
+#drop unused factor level
+full$workclass <- factor(full$workclass)
+full$occupation <- factor(full$occupation)
+full$native.country <- factor(full$native.country)
+
+```
+
+```{r}
+#imputation of workclass
+#Whether we should use all these columns? Excluded: age, fnlwgt, marital-status
+mice_mod <- mice(full[, names(full) %in% c('workclass','education','relationship','race','sex','hours.per.week')], m=1,method='rf') 
+
+# Save the complete output 
+mice_output <- complete(mice_mod)
+
+```
+```{r}
+#Check validity of imputation
+par(mfrow=c(1,2))
+pie(table(full$workclass), main="Work Class: Original Data")
+pie(table(mice_output$workclass), main="Work Class: MICE Output")
+
+full$workclass <- mice_output$workclass
+```
+```{r}
+#imputation of occupation
+#Whether we should use all these columns? Excluded: age, fnlwgt, marital-status
+mice_mod1 <- mice(full[, names(full) %in% c('occupation','education','relationship','race','sex','hours.per.week')], m=1,method='rf') 
+
+# Save the complete output 
+mice_output1 <- complete(mice_mod1)
+
+#mice.mod <- parlmice(full[, names(full) %in% c('workclass','education','relationship','race','sex','hours.per.week')], m=5,method='rf',maxit=10,n.core = 5,n.imp.core=500,cl.type = "FORK")
+```
+```{r}
+#Check validity of imputation
+par(mfrow=c(1,2))
+pie(table(full$occupation), main="Occupation: Original Data")
+pie(table(mice_output1$occupation), main="Occupation: MICE Output")
+
+full$occupation <- mice_output1$occupation
+
+```
+```{r}
+#imputation of native.country
+#Whether we should use all these columns? Excluded: age, fnlwgt, marital-status
+mice_mod2 <- mice(full[, names(full) %in% c('native.country','education','relationship','race','sex','hours.per.week')], m=1,method='rf') 
+
+# Save the complete output 
+mice_output2 <- complete(mice_mod2)
+
+```
+
+```{r}
+#Check validity of imputation
+par(mfrow=c(1,2))
+pie(table(full$native.country), main="Native Country: Original Data")
+pie(table(mice_output2$native.country), main="Native Country: MICE Output")
+
+full$native.country <- mice_output2$native.country
+
+```
+
+```{r}
+#Preprocessing Age column
+#Since it's right skewed, we log-transform first and standardize next for training and test set separately:
+age.t <- log(full$age)
+age.t[1:32561] <- (age.t[1:32561]-mean(age.t[1:32561]))/sd(age.t[1:32561])
+age.t[32562:48842] <- (age.t[32562:48842]-mean(age.t[32562:48842]))/sd(age.t[32562:48842])
+hist(age.t)
+
+full$age <- age.t
+```
+
+```{r}
+#Preprocessing fnlwgt column
+#Since it's right skewed, we log-transform first and standardize next for training and test set separately:
+fnlwgt.t <- log(full$fnlwgt)
+fnlwgt.t[1:32561] <- (fnlwgt.t[1:32561]-mean(fnlwgt.t[1:32561]))/sd(fnlwgt.t[1:32561])
+fnlwgt.t[32562:48842] <- (fnlwgt.t[32562:48842]-mean(fnlwgt.t[32562:48842]))/sd(fnlwgt.t[32562:48842])
+hist(fnlwgt.t)
+
+full$fnlwgt <- fnlwgt.t
+```
+```{r}
+#Since education.num is just ordinal representation of education, we can safely drop it.
+full$education.num <- NULL
+```
+```{r}
+#Since capital.gain and capital.loss columns are mostly consisted of 0, we transform them to be categorical varibles of whether it is 0 or not.
+full$capital.gain <- (full$capital.gain!=0)
+full$capital.loss <- (full$capital.loss!=0)
+```
+
+```{r}
+#Standardizing hours.per.week column
+hours.t <- full$hours.per.week
+hours.t[1:32561] <- (hours.t[1:32561]-mean(hours.t[1:32561]))/sd(hours.t[1:32561])
+hours.t[32562:48842] <- (hours.t[32562:48842]-mean(hours.t[32562:48842]))/sd(hours.t[32562:48842])
+hist(hours.t)
+
+full$hours.per.week <- hours.t
+```
+
+```{r}
+#Group native country by continents since the numbers of them are small comparing to United States.
+country.t <- as.character(full$native.country)
+m=length(country.t)
+for(x in 1:m){
+  if (country.t[x] %in% c(" Cambodia"," China"," India"," Hong"," Thailand"," Taiwan"," Philippines"," Laos"," Japan"," Vietnam")){
+    country.t[x]="EAsia"
+  }
+  if (country.t[x] %in% c(" Canada"," United-States")){
+    country.t[x]="NAmerica"
+  }
+  if (country.t[x] %in% c(" Columbia"," Ecuador"," Peru"," El-Salvador"," Guatemala"," Honduras"," Nicaragua"," Mexico")){
+    country.t[x]="SAmerica"
+  }
+  if (country.t[x] %in% c(" Cuba"," Dominican-Republic"," Haiti"," Trinadad&Tobago"," Puerto-Rico")){
+    country.t[x]="Carribean"
+  }
+  if (country.t[x] %in% c(" England"," France"," Germany"," Greece"," Holand-Netherlands"," Hungary"," Portugal"," Scotland"," Poland"," Ireland"," Italy"," Yugoslavia")){
+    country.t[x]="Europe"
+  }
+  if (country.t[x] %in%  c(" South"," Jamaica"," Iran", " Outlying-US(Guam-USVI-etc)")){
+    country.t[x]="Other"
+  }
+}
+
+full$native.country <- country.t
+full$native.country <- factor(full$native.country)
+                                                                    
+```
+
+```{r}
+#Encoding all categorical variables
+full.t <- dummyVars( ~., data = full[,-14],fullRank=TRUE)
+full1 <- data.frame(predict(full.t,newdata=full))
+full1$income <- full$income
+head(full1)
+```
+
+
+```{r}
+#Train and test set split
+x.train <- full1[train,]#put regressors from training set into a matrix
+y.train <- full1[train,]$income #label for training set
+x.test <- full1[test,]#put regressors from test set into a matrix
+y.test <- full1[test,]$income #label for test set
+```
+
+Part3: Model Fitting
+```{r}
+#Logistic regression
+glm.fit=glm(income~.,data=full1, family=binomial, subset=train) 
+glm.prob=predict(glm.fit,x.test,type="response") 
+summary(glm.fit)
+```
+```{r}
+#feature selection
+exclude=-c(44,45,46,47,48,49,50,51,52,57,58,59,60,61)
+glm.fit=glm(income~.,data=full1[,exclude], family=binomial, subset=train) 
+glm.prob=predict(glm.fit,x.test[,exclude],type="response") 
+summary(glm.fit)
+```
+
+```{r}
+glm.pred=rep (" <=50K" ,16281)
+glm.pred[glm.prob >.5]=" >50K"
+table(glm.pred ,y.test)
+mean(glm.pred== y.test)
+```
+
+
+```{r}
+#LDA
+library (MASS)
+lda.fit=lda(income~.,data=full1, subset=train) 
+lda.fit
+```
+
+
+```{r}
+lda.pred=predict (lda.fit ,x.test)
+lda.class =lda.pred$class
+table(lda.class ,y.test)
+mean(lda.class== y.test)
+```
+
+
+```{r}
+#QDA
+#qda.fit=qda(income~.,data=full1, subset=train) 
+#qda.fit
+#qda.pred=predict (qda.fit ,x.test)
+#qda.class =qda.pred$class
+#table(qda.class ,y.test)
+#mean(qda.class== y.test)
+```
+
+```{r}
+#Naive Bayes
+NBClassifier=naiveBayes(income~.,data=full1, subset=train) 
+nbc.pred=predict(NBClassifier, x.test, type="class") 
+table(nbc.pred ,y.test)
+mean(nbc.pred== y.test)
+```
+
+
+```{r}
+#SVM: tuning of gamma: control the width of the Gaussian Kernel, the scale of that it means for points to be close together and C
+svm.fit = svm(income ~ ., data = x.train, kernel = "linear", cost = 10, scale = FALSE)
+svm.pred=predict(svm.fit, x.test, type="class") 
+table(svm.pred ,y.test)
+mean(svm.pred== y.test)
+```
+
+```{r}
+#Decision Tree: rpart
+tree.fit = rpart(income~., data=x.train)
+tree.fit
+printcp(tree.fit)
+```
+```{r}
+plot(cvtree)
+prune.tree = prune.misclass(tree.fit, best =6)
+```
+
+
+```{r}
+tree.pred=predict(prune.tree, x.test, type="class") 
+table(tree.pred ,y.test)
+mean(tree.pred== y.test)
+```
+
+
+
+```{r}
+x.trainm=data.matrix(x.train)[,-62]
+x.testm=data.matrix(x.test)[,-62]
+```
+
+
+```{r}
+#Ridge Penalized Logistic Regression
+set.seed(100)
+# Find the best lambda using cross-validation
+cv.ridge=cv.glmnet(x.trainm,y.train,alpha=0,family = "binomial") 
+# Fit the final model on the training data
+ridge.fit=glmnet(x.trainm,y.train,alpha=0,family = "binomial",lambda = cv.ridge$lambda.min)
+coef(ridge.fit)
+
+```
+```{r}
+# Make predictions on the test data
+ridge.pred=predict(ridge.fit,newx=x.testm) 
+ridge.class <- ifelse(ridge.pred > 0.5, " >50K", " <=50K")
+table(ridge.class ,y.test)
+mean(ridge.class == y.test)
+```
+
+
+```{r}
+#Lasso Penalized Logistic Regression
+set.seed(100)
+# Find the best lambda using cross-validation
+cv.lasso=cv.glmnet(x.trainm,y.train,alpha=1,family = "binomial") 
+# Fit the final model on the training data
+lasso.fit=glmnet(x.trainm,y.train,alpha=1,family = "binomial",lambda = cv.lasso$lambda.min)
+coef(lasso.fit)
+
+```
+
+
+```{r}
+# Make predictions on the test data
+lasso.pred=predict(lasso.fit,newx=x.testm) 
+lasso.class <- ifelse(lasso.pred > 0.5, " >50K", " <=50K")
+table(lasso.class ,y.test)
+mean(lasso.class == y.test)
+```
+```{r}
+#Elastic Net
+train_control <- trainControl(method = "repeatedcv",
+                              number = 5,
+                              repeats = 3,
+                              search = "random")
+
+# Train the model
+elastic_net.fit <- train(income ~ .,
+                           data = full1[train,],
+                           method = "glmnet",
+                           preProcess = c("center", "scale"),
+                           tuneLength = 25,
+                           trControl = train_control)
+
+# Check multiple R-squared
+y_hat_enet <- predict(elastic_net_model, X)
+rsq_enet <- cor(y, y_hat_enet)^2
+
+```
+
+
+
+
+
+```{r}
+#Occupation and income
+ggplot(full[1:32561,], aes(x = occupation, fill = income))+
+  geom_bar(stat='count', position='dodge') +
+  labs(x = 'occupation')
+```
+```{r}
+#Hours per week
+ggplot(full, aes(x = hours.per.week)) +
+  geom_density(fill = '#99d6ff', alpha=0.4) + 
+  geom_vline(aes(xintercept=median(hours.per.week, na.rm=T)),
+    colour='red', linetype='dashed', lwd=1) +
+  scale_x_continuous() 
+```
+
+```{r}
+ggplot(full[1:32561,], aes(age, fill = factor(income))) + 
+  geom_histogram() + 
+  facet_grid(.~sex)
+```
+
+
+
+
+```{r}
+
+rf_model <- randomForest( ~ Pclass + Sex + Age + SibSp + Parch + 
+                                            Fare + Embarked + Title + 
+                                            FsizeD + Child + Mother,
+                                            data = train)
+
+# Show model error
+plot(rf_model, ylim=c(0,0.36))
+legend('topright', colnames(rf_model$err.rate), col=1:3, fill=1:3)
+
+
+importance    <- importance(rf_model)
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(importance[ ,'MeanDecreaseGini'],2))
+
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+    y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+    hjust=0, vjust=0.55, size = 4, colour = 'red') +
+  labs(x = 'Variables') +
+  coord_flip() + 
+  theme_few()
+
+
+# Predict using the test set
+prediction <- predict(rf_model, test)
+
+# Save the solution to a dataframe with two columns: PassengerId and Survived (prediction)
+solution <- data.frame(PassengerID = test$PassengerId, Survived = prediction)
+
+# Write the solution to file
+write.csv(solution, file = 'rf_mod_Solution.csv', row.names = F)
+```
+
+1.Nearest Neighbours
+In principal, there are two important parameters to the KNeighbors classifier: the number of neighbors and how you measure distance between data points.
+So while the nearest neighbors algorithm is easy to understand, it is not often used in practice, due to prediction being slow, and its inability to handle many features.
+
+ridge lasso elastic net
+Logistic Regression: classification, higher C less regularisation
+LinearSVC: classification, higher C less regularisation
+
+4.Decision Trees: can be visualised and easily explained Use Feature Importance to recognise the most defining features may overfit
+
+5.Ensemble
+Random Forests: collection of decision trees, randomising on data selection and feature selection
+    Much more broader picture than a single tree, n_jobs to use all cores in computer, bot not good performance on high dimensional, sparse data
+    max_features=sqrt(n_features) for classification and log2(n_features) for regression
+Gradient Boosted Regression Trees: slightly more accurate than random forest, and smaller in memory
+    learning rate, other package for big data
+    powerful, requires careful tuning of parameters, take a long time to train
+
+
+7.Neural Networks
+number of hidden nodes,
+alpha:l2 weight of the points towards zero
+need normalisation and feature scaling
+takes a lot of time to train, works best with homogeneous data
+algorithm as parameter: adam, l-bfgs
+
+Transformations are best for linear models and naive Bayes, while more complex models benefit from it less.
+Feature Selection:
+Analysis of variance ANOVA to select the features with the highest confidence of relation
+Use models with feature importance and select module to choose the features to use
+Iterative selection:
+
+Fold, StratifiedKFold, LabelKFold
+Cross Validation with Groups: sample in the same group only in training set
+gridsearch
+AUC: TRUE POSITVE RATE~FLASE POSITIVE RATE, for evaluating models on imbalanced data
+f-score: harmonic mean of precision and recall
+Changing the decision threshold is the best way to obtain better results for balancing precision and recall
+precision recall curve to determine the operating point: average precision the area under the curve
+
+Feature Selection and Feature extraction and scaling and PCA separately on training and test set
+```{r}
+#subset selelction
+regfit=regsubsets(Salary~.,data=Hitters[train,],nvmax=19)
+reg.summary=summary(regfit)
+reg.summary$bic
+
+
+#PCA
+set.seed(100)
+pcr.fit=pcr(Salary~.,data=Hitters, scale=TRUE, validation="CV") 
+summary(pcr.fit)
+validationplot(pcr.fit,val.type = "MSEP") 
+pcr.pred=predict(pcr.fit,Hitters[test,],ncomp=6) #make predictions using 6 components
+mean((Hitters[test,]$Salary-pcr.pred)^2) #calculate mse using the test set
+
+#PLS
+pls.fit=plsr(income~.,data=x.train, scale=TRUE, validation="CV") 
+summary(pls.fit)
+
+validationplot(pls.fit,val.type = "MSEP") 
+pls.pred=predict(pls.fit,Hitters[test,],ncomp=3) #make predictions using 3 components
+mean((Hitters[test,]$Salary-pls.pred)^2) #calculate mse using the test set
+
+#preprocess
+preProcess(abalone_no_nzv_pca <- preProcess(select(abalone_train, - old), 
+                        method = c("center", "scale", "YeoJohnson", "nzv", "pca")))
+abalone_no_nzv_pca
+abalone_no_nzv_pca$method
+
+#group k fold
+groupKFold(abalone_grouped$group, k = 10)
+
+#tuning gridd
+rf_grid <- expand.grid(mtry = c(2, 3, 4, 5),
+                      splitrule = c("gini", "extratrees"),
+                      min.node.size = c(1, 3, 5))
+rf_fit <- train(as.factor(old) ~ ., 
+                data = select(abalone_grouped, - group), 
+                method = "ranger",
+                trControl = group_fit_control,
+                # provide a grid of parameters
+                tuneGrid = rf_grid)
+rf_fit
+```
+
+
