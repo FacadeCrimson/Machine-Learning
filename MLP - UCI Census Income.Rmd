@@ -1,0 +1,567 @@
+---
+title: "Machine Learning"
+author: "Lechen Tan"
+date: "2/18/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+```{r}
+#All libraries needed.
+library('tidyverse') 
+library('scales')
+library('caret')
+library('mice')
+library ('MASS')
+library('klaR')
+library('mlbench')
+library('kernlab')
+library('randomForest')
+library('glmnet')
+library('e1071')
+library('rpart')
+library('pls')
+library('neuralnet')
+library('doParallel')
+```
+
+
+Part 1: Data Reading and Exploratory Data Analysis
+```{r}
+#Read in train and test data:
+training <- read.csv("/Users/apple/Desktop/ML Project/adult.data",header=FALSE)
+colnames(training) <- c("age","workclass","fnlwgt","education","education.num","marital.status","occupation","relationship","race","sex","capital.gain","capital.loss","hours.per.week","native.country","income")
+
+testing  <- read.csv('/Users/apple/Desktop/ML Project/adult.test',header=FALSE,skip = 1)
+colnames(testing) <- c("age","workclass","fnlwgt","education","education.num","marital.status","occupation","relationship","race","sex","capital.gain","capital.loss","hours.per.week","native.country","income")
+
+levels(training$income) <-c("Low","High")
+levels(testing$income) <-c("Low","High")
+levels(testing$native.country) <- levels(training$native.country)
+
+#rows
+nrow(training)
+nrow(testing)
+
+train=1:32561
+test=-(train)
+
+#full dataset
+full  <- bind_rows(training, testing)
+
+str(full)
+```
+
+```{r}
+#Count of NAs
+sapply(full,function(x)sum(is.na(x)))
+```
+
+
+```{r}
+#Table of categorical variables:
+sapply(full,function(x)if(is.factor(x))table(x))
+
+```
+
+```{r}
+#Histogram of age:
+hist(full$age)
+
+```
+
+```{r}
+#Histogram of final weight:
+hist(full$fnlwgt)
+```
+
+```{r}
+#Histogram of education.num
+hist(full$education.num)
+```
+
+```{r}
+#Histogram of hour.per.week
+hist(full$hours.per.week)
+```
+
+```{r}
+#Table of whether there is capital gain or loss versus income
+table(full$capital.gain==0,full$income)
+table(full$capital.loss==0,full$income)
+```
+
+
+Part 2: Data Preprocessing
+```{r}
+
+#convert unknown to NA
+full$workclass <- na_if(full$workclass,' ?')
+full$occupation <- na_if(full$occupation,' ?')
+full$native.country <- na_if(full$native.country,' ?')
+
+#drop unused factor level
+full$workclass <- factor(full$workclass)
+full$occupation <- factor(full$occupation)
+full$native.country <- factor(full$native.country)
+
+```
+
+```{r}
+#imputation of workclass
+mice_mod <- mice(full[, names(full) %in% c('workclass','age','fnlwgt','education','marital-status','relationship','race','sex','hours.per.week')], m=1,method='rf') 
+
+# Save the complete output 
+mice_output <- complete(mice_mod)
+
+#mice.mod <- parlmice(full[, names(full) %in% c('workclass','age','fnlwgt','education','marital-status','relationship','race','sex','hours.per.week')], m=1,method='rf',maxit=5,n.core = 5,n.imp.core=500,cl.type = "FORK")
+
+```
+
+```{r}
+#Check validity of imputation
+par(mfrow=c(1,2))
+pie(table(full$workclass), main="Work Class: Original Data")
+pie(table(mice_output$workclass), main="Work Class: MICE Output")
+
+full$workclass <- mice_output$workclass
+```
+
+```{r}
+#imputation of occupation
+mice_mod1 <- mice(full[, names(full) %in% c('occupation','age','fnlwgt','education','marital-status','relationship','race','sex','hours.per.week')], m=1,method='rf') 
+
+# Save the complete output 
+mice_output1 <- complete(mice_mod1)
+
+```
+
+```{r}
+#Check validity of imputation
+par(mfrow=c(1,2))
+pie(table(full$occupation), main="Occupation: Original Data")
+pie(table(mice_output1$occupation), main="Occupation: MICE Output")
+
+full$occupation <- mice_output1$occupation
+```
+
+```{r}
+#imputation of native.country
+mice_mod2 <- mice(full[, names(full) %in% c('native.country','age','fnlwgt','education','marital-status','relationship','race','sex','hours.per.week')], m=1,method='rf') 
+
+# Save the complete output 
+mice_output2 <- complete(mice_mod2)
+
+```
+
+```{r}
+#Check validity of imputation
+par(mfrow=c(1,2))
+pie(table(full$native.country), main="Native Country: Original Data")
+pie(table(mice_output2$native.country), main="Native Country: MICE Output")
+
+full$native.country <- mice_output2$native.country
+```
+
+```{r}
+#Preprocessing Age column
+#Since it's right skewed, we log-transform first and standardize next for training and test set separately:
+age.t <- log(full$age)
+age.t[train] <- (age.t[train]-mean(age.t[train]))/sd(age.t[train])
+age.t[test] <- (age.t[test]-mean(age.t[test]))/sd(age.t[test])
+hist(age.t)
+
+full$age <- age.t
+```
+
+```{r}
+#Preprocessing fnlwgt column
+#Since it's right skewed, we log-transform first and standardize next for training and test set separately:
+fnlwgt.t <- log(full$fnlwgt)
+fnlwgt.t[train] <- (fnlwgt.t[train]-mean(fnlwgt.t[train]))/sd(fnlwgt.t[train])
+fnlwgt.t[test] <- (fnlwgt.t[test]-mean(fnlwgt.t[test]))/sd(fnlwgt.t[test])
+hist(fnlwgt.t)
+
+full$fnlwgt <- fnlwgt.t
+```
+
+```{r}
+#Since education.num is just ordinal representation of education, we can safely drop it.
+full$education.num <- NULL
+```
+
+```{r}
+#Since capital.gain and capital.loss columns are mostly consisted of 0, we transform them to be categorical varibles of whether it is 0 or not.
+full$capital.gain <- (full$capital.gain!=0)
+full$capital.loss <- (full$capital.loss!=0)
+```
+
+```{r}
+#Standardizing hours.per.week column
+hours.t <- full$hours.per.week
+hours.t[train] <- (hours.t[train]-mean(hours.t[train]))/sd(hours.t[train])
+hours.t[test] <- (hours.t[test]-mean(hours.t[test]))/sd(hours.t[test])
+hist(hours.t)
+
+full$hours.per.week <- hours.t
+```
+
+```{r}
+#Group native country by continents since the numbers of them are small comparing to United States.
+country.t <- as.character(full$native.country)
+m=length(country.t)
+for(x in 1:m){
+  if (country.t[x] %in% c(" Cambodia"," China"," India"," Hong"," Thailand"," Taiwan"," Philippines"," Laos"," Japan"," Vietnam")){
+    country.t[x]="EAsia"
+  }
+  if (country.t[x] %in% c(" Canada"," United-States")){
+    country.t[x]="NAmerica"
+  }
+  if (country.t[x] %in% c(" Columbia"," Ecuador"," Peru"," El-Salvador"," Guatemala"," Honduras"," Nicaragua"," Mexico")){
+    country.t[x]="SAmerica"
+  }
+  if (country.t[x] %in% c(" Cuba"," Dominican-Republic"," Haiti"," Trinadad&Tobago"," Puerto-Rico")){
+    country.t[x]="Carribean"
+  }
+  if (country.t[x] %in% c(" England"," France"," Germany"," Greece"," Holand-Netherlands"," Hungary"," Portugal"," Scotland"," Poland"," Ireland"," Italy"," Yugoslavia")){
+    country.t[x]="Europe"
+  }
+  if (country.t[x] %in%  c(" South"," Jamaica"," Iran", " Outlying-US(Guam-USVI-etc)")){
+    country.t[x]="Other"
+  }
+}
+
+full$native.country <- country.t
+full$native.country <- factor(full$native.country)
+                                                                    
+```
+
+```{r}
+#Encoding all categorical variables
+full.t <- dummyVars( ~., data = full[,-14],fullRank=TRUE)
+full1 <- data.frame(predict(full.t,newdata=full))
+full1$income <- full$income
+head(full1)
+```
+
+
+```{r}
+#Train and test set split
+x.train <- full1[train,]#put regressors from training set into a matrix
+y.train <- full1[train,]$income #label for training set
+x.test <- full1[test,]#put regressors from test set into a matrix
+y.test <- full1[test,]$income #label for test set
+```
+
+Part3: Model Fitting
+```{r}
+#Logistic regression
+glm.fit=glm(income~.,data=full1, family=binomial, subset=train) 
+glm.prob=predict(glm.fit,x.test,type="response") 
+summary(glm.fit)
+```
+
+```{r}
+glm.pred=rep ("Low" ,16281)
+glm.pred[glm.prob >.4]="High"
+table(glm.pred ,y.test)
+mean(glm.pred== y.test)
+```
+
+```{r}
+#Matrix transformation of x:
+x.trainm=data.matrix(x.train)[,-62]
+x.testm=data.matrix(x.test)[,-62]
+```
+
+
+```{r}
+#Ridge Penalized Logistic Regression
+set.seed(100)
+# Find the best lambda using cross-validation
+cv.ridge=cv.glmnet(x.trainm,y.train,alpha=0,family = "binomial") 
+# Fit the final model on the training data
+ridge.fit=glmnet(x.trainm,y.train,alpha=0,family = "binomial",lambda = cv.ridge$lambda.min)
+coef(ridge.fit)
+```
+
+```{r}
+# Make predictions on the test data
+ridge.pred=predict(ridge.fit,newx=x.testm) 
+ridge.class <- ifelse(ridge.pred > 0.0001, "High", "Low")
+table(ridge.class ,y.test)
+mean(ridge.class == y.test)
+```
+
+
+```{r}
+#Lasso Penalized Logistic Regression
+set.seed(100)
+# Find the best lambda using cross-validation
+cv.lasso=cv.glmnet(x.trainm,y.train,alpha=1,family = "binomial") 
+# Fit the final model on the training data
+lasso.fit=glmnet(x.trainm,y.train,alpha=1,family = "binomial",lambda = cv.lasso$lambda.min)
+coef(lasso.fit)
+```
+
+```{r}
+# Make predictions on the test data
+lasso.pred=predict(lasso.fit,newx=x.testm) 
+lasso.class <- ifelse(lasso.pred > 0.0001, "High", "Low")
+table(lasso.class ,y.test)
+mean(lasso.class == y.test)
+```
+
+
+```{r}
+#Elastic Net
+
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+train_control <- trainControl(method = "repeatedcv",
+                              number = 5,
+                              repeats = 3,
+                              search = "random",
+                              classProbs = TRUE, 
+                              summaryFunction = twoClassSummary
+                              )
+
+# Train the model
+elastic.fit <- train(income ~ .,
+                           data = full1[train,],
+                           method = "glmnet",
+                           tuneLength = 25,
+                           trControl = train_control,
+                           metric = "ROC")
+
+stopCluster(cl)
+```
+
+```{r}
+# Check confusion matrix:
+elastic.class<- predict(elastic.fit, x.test)
+confusionMatrix(data = elastic.class, y.test)
+```
+
+
+```{r}
+#LDA
+lda.fit=lda(income~.,data=full1, subset=train) 
+lda.fit
+```
+
+```{r}
+lda.pred=predict (lda.fit ,x.test)
+lda.class =lda.pred$class
+table(lda.class ,y.test)
+mean(lda.class== y.test)
+```
+
+
+```{r}
+#Naive Bayes
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+nb.control <- trainControl(
+  method = "cv", 
+  number = 10
+  )
+
+# Train the model
+nb.fit <- train(income ~ .,
+                           data = full1[train,],
+                           method = "nb",
+                           trControl = nb.control)
+
+stopCluster(cl)
+```
+
+```{r}
+# Check confusion matrix:
+nb.class<- predict(nb.fit, x.test)
+confusionMatrix(data = nb.class, y.test)
+```
+
+
+```{r}
+#SVM
+svm.fit = svm(income ~ ., data = x.train, kernel = "linear", cost = 10, scale = FALSE)
+svm.pred=predict(svm.fit, x.test, type="class") 
+
+table(svm.pred ,y.test)
+mean(svm.pred== y.test)
+```
+
+
+```{r}
+#Decision Tree: 
+tree.fit = rpart(income~., data=x.train,method='class')
+tree.fit
+printcp(tree.fit)
+plotcp(tree.fit)
+summary(tree.fit)
+```
+
+```{r}
+# prune the tree
+tree.prune<- prune(tree.fit, cp= tree.fit$cptable[which.min(tree.fit$cptable[,"xerror"]),"CP"])
+
+# plot the pruned tree
+plot(tree.prune, uniform=TRUE)
+text(tree.prune, use.n=TRUE, all=TRUE, cex=.8)
+```
+
+```{r}
+tree.pred=predict(tree.prune, x.test, type="class") 
+table(tree.pred ,y.test)
+mean(tree.pred== y.test)
+```
+
+```{r}
+#Random Forest:importance
+set.seed(100)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+rf.control <- trainControl(method='repeatedcv', 
+                        number=5, 
+                        repeats=3,
+                        classProbs = TRUE, 
+                        summaryFunction = twoClassSummary)
+
+mtry <- sqrt(ncol(x.train))
+tunegrid <- expand.grid(.mtry=mtry)
+
+rf.fit <- train(income~., 
+                      data=full1[train,], 
+                      method='rf', 
+                      metric='ROC', 
+                      tuneGrid=tunegrid, 
+                      trControl=rf.control)
+
+stopCluster(cl)
+```
+```{r}
+print(rf.fit)
+rf.class<- predict(rf.fit, x.test)
+confusionMatrix(data = rf.class, y.test)
+```
+
+```{r}
+#PCA -> Neural Net
+pca = prcomp( x.trainm, scale = T )
+ 
+# variance
+pr_var = ( pca$sdev )^2 
+
+# % of variance
+prop_varex = pr_var / sum( pr_var )
+
+# Plot
+plot( prop_varex, xlab = "Principal Component", 
+                  ylab = "Proportion of Variance Explained", type = "b" )
+
+# Scree Plot
+plot( cumsum( prop_varex ), xlab = "Principal Component", 
+                            ylab = "Cumulative Proportion of Variance Explained", type = "b" )
+```
+```{r}
+#PCA train and test set
+nn.train = data.frame( income = y.train, pca$x[,1:40] )
+nn.test = as.data.frame(predict( pca, newdata = x.test ) )[,1:40]
+```
+
+```{r}
+#Neural Net
+set.seed(100)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+nn.control <- trainControl(method='cv', 
+                        number=10, 
+                        classProbs = TRUE, 
+                        summaryFunction = twoClassSummary)
+
+nn.grid <- expand.grid(.decay=c(0.5,0.1),.size=c(5,6,7))
+
+nn.fit <- train(income~., 
+                      data=nn.train, 
+                      method='nnet', 
+                      linout=FALSE,
+                      trControl=nn.control,
+                      tuneGrid=nn.grid,
+                      metric='ROC'
+                      )
+
+stopCluster(cl)
+
+```
+
+```{r}
+plot( nn.fit, rep = "best" )
+
+nn.class<- predict(nn.fit, nn.test)
+confusionMatrix(data = nn.class, y.test)
+```
+
+
+Part 4: Appendix
+```{r}
+#Explore correlation
+#Occupation and income
+ggplot(full[1:32561,], aes(x = occupation, fill = income))+
+  geom_bar(stat='count', position='dodge') +
+  labs(x = 'occupation')
+```
+
+```{r}
+#Hours per week
+ggplot(full, aes(x = hours.per.week)) +
+  geom_density(fill = '#99d6ff', alpha=0.4) + 
+  geom_vline(aes(xintercept=median(hours.per.week, na.rm=T)),
+    colour='red', linetype='dashed', lwd=1) +
+  scale_x_continuous() 
+```
+
+```{r}
+#Sex and income
+ggplot(full[1:32561,], aes(age, fill = factor(income))) + 
+  geom_histogram() + 
+  facet_grid(.~sex)
+```
+
+```{r}
+#Visualizing feature importance
+importance <- varImp(rf.fit)$importance
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(importance$Overall,2))
+varImportance
+```
+
+```{r}
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+    y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+    hjust=0, vjust=0.55, size = 4, colour = 'red') +
+  labs(x = 'Variables') +
+  coord_flip()
+```
+
+```{r}
+#Problems:
+#SVM and random forest take too much time to train and find the optimal parameters
+
+```
+
+
