@@ -1,0 +1,675 @@
+---
+title: "Full Machine Learning"
+author: "Lechen Tan"
+date: "3/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library('tidyverse') 
+library('scales')
+library('caret')
+library('mice')
+library ('MASS')
+library('boot')
+library('klaR')
+library('mlbench')
+library('kernlab')
+library('randomForest')
+library('glmnet')
+library('e1071')
+library('rpart')
+library('gbm')
+library('pls')
+library('xgboost')
+library('neuralnet')
+library('FactoMineR')
+library('factoextra')
+library('doParallel')
+```
+
+## Part 1: Data Reading and Exploratory Data Analysis
+```{r}
+#Read in train and test data:
+training <- read.csv("/Users/apple/Desktop/MLC - House Prices/train.csv")
+
+testing  <- read.csv('/Users/apple/Desktop/MLC - House Prices/test.csv')
+
+#Unify factor levels
+for(x in 1:81){
+  if(is.factor(training[,x])){
+    levels(testing[,x]) <- levels(training[,x])
+  }
+}
+
+#rows
+nrow(training)
+nrow(testing)
+
+train=1:1460
+test=-(train)
+
+#full dataset
+full  <- bind_rows(training, testing)
+
+str(full)
+```
+
+```{r}
+#Count of NAs
+sapply(full,function(x)sum(is.na(x)))
+```
+```{r}
+#Convert to categorical variables
+full$MSSubClass <- as.factor(full$MSSubClass)
+full$MoSold <- as.factor(full$MoSold)
+full$BsmtFullBath <- as.factor(full$BsmtFullBath)
+full$BsmtHalfBath <- as.factor(full$BsmtHalfBath)
+```
+
+
+```{r}
+#Table of categorical variables
+x <- sapply(full,function(x)is.factor(x))
+sapply(full[,x],function(x)table(x))
+```
+
+## Part2: Data Preprocessing
+```{r}
+#Dropping due to mostly single class or mostly 0s.
+full$Id <- NULL
+full$Street <- NULL
+full$Alley <- NULL
+full$Utilities <- NULL
+full$LowQualFinSF <- NULL
+full$X3SsnPorch <- NULL
+full$PoolArea <- NULL
+full$PoolQC <- NULL
+full$MiscFeature <- NULL
+full$MiscVal <- NULL
+full$Condition2 <- NULL
+full$GarageYrBlt <- NULL
+```
+
+
+```{r}
+#Ordinal Encoding
+full$ExterQual<- as.integer(factor(full$ExterQual,levels=c("Fa","TA","Gd","Ex")))
+full$ExterCond<- as.integer(factor(full$ExterCond,levels=c("Po","Fa","Gd","TA","Ex")))
+full$BsmtQual<- as.integer(factor(full$BsmtQual,exclude = NULL,levels=c(NA,"Fa","TA","Gd","Ex"),labels = c(1, 2, 3, 4, 5)))
+full$BsmtCond<- as.integer(factor(full$BsmtCond,exclude = NULL,levels=c("Po",NA,"Fa","TA","Gd"),labels = c(1, 2, 3, 4, 5)))
+full$BsmtExposure<- as.integer(factor(full$BsmtExposure,exclude = NULL,levels=c(NA,"No","Mn","Av","Gd"),labels = c(1, 2, 3, 4, 5)))
+full$BsmtFinType1<- as.integer(factor(full$BsmtFinType1,exclude = NULL,levels=c(NA,"Rec","BLQ","LwQ","ALQ","Unf","GLQ"),labels = c(1, 2, 3, 4, 5, 6, 7)))
+full$BsmtFinType2<- as.integer(factor(full$BsmtFinType2,exclude = NULL,levels=c(NA,"BLQ","LwQ","Rec","GLQ","Unf","ALQ"),labels = c(1, 2, 3, 4, 5, 6, 7)))
+full$HeatingQC<- as.integer(factor(full$HeatingQC,levels=c("Po","Fa","TA","Gd","Ex")))
+full$FireplaceQu<- as.integer(factor(full$FireplaceQu,exclude = NULL,levels=c( "Po",NA,"Fa","TA","Gd","Ex"),labels = c(1, 2, 3, 4, 5, 6)))
+full$GarageFinish<- as.integer(factor(full$GarageFinish,exclude = NULL,levels=c(NA,"Unf","RFn","Fin"),labels = c(1, 2, 3, 4)))
+full$GarageQual<- as.integer(factor(full$GarageQual,exclude = NULL,levels=c(NA,"Po","Fa","TA","Gd","Ex"),labels = c(1, 2, 3, 4, 5, 6)))
+full$GarageCond<- as.integer(factor(full$GarageCond,exclude = NULL,levels=c(NA,"Po","Fa","Ex","Gd","TA"),labels = c(1, 2, 3, 4, 5, 6)))
+full$PavedDrive<- as.integer(factor(full$PavedDrive,levels=c("N","P","Y")))
+full$Fence<- as.integer(factor(full$Fence,exclude = NULL,levels=c("MnWw","GdWo","MnPrv","GdPrv",NA),labels = c(1, 2, 3, 4, 5)))
+full$GarageType <- factor(full$GarageType,exclude=NULL,levels=c(NA,"2Types","Attchd","Basment","BuiltIn","CarPort","Detchd" ),labels = c("None","2Types","Attchd","Basment","BuiltIn","CarPort","Detchd"))
+```
+
+
+
+```{r}
+#Check validity of ordinal encoding by summarizing average SalePrice of each factor level, adjust order if the average is not ascending with encoding number.
+#Alter the order of ExterCond, BsmtCond,BsmtFinType1,BsmtFinType2,FireplaceQu,GarageCond,Fence
+summarize(group_by(full,GarageCond),
+          mean(SalePrice, na.rm=T))
+
+```
+
+
+
+
+```{r}
+#Imputation of missing values using key characteristics:
+
+for(x in c('MSZoning','Exterior1st','Exterior2nd','MasVnrType','Electrical','BsmtFullBath','BsmtHalfBath','KitchenQual','Functional','SaleType','LotFrontage','MasVnrArea','BsmtFinSF1','BsmtFinSF2','BsmtUnfSF','TotalBsmtSF','GarageCars','GarageArea')){
+
+  mice_mod <- mice(full[, names(full) %in% c(x,'MSSubClass','LotArea','Neighborhood','HouseStyle','OverallQual','YearBuilt')], m=3,method='rf') 
+  mice_output <- complete(mice_mod)
+  full[,x] <- mice_output[,x]
+}
+
+```
+```{r}
+full$KitchenQual<- as.integer(factor(full$KitchenQual,levels=c("Fa","TA","Gd","Ex")))
+```
+
+```{r}
+full$SalePrice <- log(full$SalePrice)
+head(full)
+```
+
+```{r}
+#Original data: train test split
+x.train <- full[train,-69]
+y.train <- full[train,69]
+x.test <- full[test,-69]
+y.test <- full[test,69]
+```
+
+
+```{r}
+#Preprocess: BoxCox transformation, centering and standardizing, pca
+pred <- preProcess(x.train,method=c("BoxCox","center","scale","pca"))
+train.t <- predict(pred,x.train)
+test.t <- predict(pred,x.test)
+
+full.t <- bind_rows(train.t, test.t)
+full.t$SalePrice <- full$SalePrice
+
+pred$method
+```
+
+
+```{r}
+#Encoding all categorical variables
+x <- dummyVars( ~., data = full.t[-57],fullRank=TRUE)
+full.t <- data.frame(predict(x,newdata=full.t))
+full.t$SalePrice <- full$SalePrice
+
+#Data with also preprocessing and dummy encoding:
+train.t <- full.t[train,-205]
+test.t <- full.t[test,-205]
+head(full.t)
+```
+
+Feature Selection
+```{r}
+#Automatic feature selection
+set.seed(100)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+rfe.con <- rfeControl(functions=rfFuncs, method="cv", number=5)
+
+results <- rfe(full[train,-69], full[train,69], sizes=c(30,40,50), rfeControl=rfe.con)
+
+stopCluster(cl)
+```
+
+
+```{r}
+print(results)
+
+predictors(results)
+
+plot(results, type=c("g", "o"))
+```
+
+```{r}
+#Feature selection with preprocessing and dummy encoding
+full.s <- full[,results$optVariables]
+
+pred <- preProcess(full.s[train,],method=c("BoxCox","center","scale","pca"))
+train.s <- predict(pred,full.s[train,])
+test.s <- predict(pred,full.s[test,])
+
+full.s <- bind_rows(train.s, test.s)
+
+x <- dummyVars( ~., data = full.s,fullRank=TRUE)
+full.s <- data.frame(predict(x,newdata=full.s))
+full.s$SalePrice <- full$SalePrice
+
+train.s <- full.s[train,-115]
+test.s <- full.s[test,-115]
+head(full.s)
+
+```
+
+
+
+## Alter this to switch between different datasets
+```{r}
+#Train and test set split
+z <- full.t[train,]
+partition <- createDataPartition(y=z$SalePrice,
+                                 p=.5,
+                                 list=F)
+tr <- z[partition,]
+te <- z[-partition,]
+```
+
+
+## Part3: Model Fitting
+```{r,cache=TRUE}
+#Linear regression: best with (Feature selected, Preprocessed) data
+lm.model=glm(SalePrice~.,family=gaussian,full.s[train,])
+lm.fit=cv.glm(full.s[train,],lm.model,K=10)
+lm.fit$delta
+```
+
+
+```{r}
+#Matrix transformation of tr and te:
+x.trainm=data.matrix(tr)[,-205]
+x.testm=data.matrix(te)[,-205]
+y.trainm=unlist(tr[205])
+```
+
+
+```{r,cache=TRUE}
+#Ridge Penalized Regression: best with (Preprocessed) data
+set.seed(100)
+# Find the best lambda using cross-validation
+cv.ridge=cv.glmnet(x.trainm,y.trainm,alpha=0) 
+# Fit the final model on the training data
+ridge.fit=glmnet(x.trainm,y.trainm,alpha=0,lambda = cv.ridge$lambda.min)
+```
+
+```{r}
+# Check RMSE
+ridge.pred=predict(ridge.fit,newx=x.testm) 
+RMSE(ridge.pred,te$SalePrice)
+```
+
+
+```{r,cache=TRUE}
+#Lasso Penalized Regression: best with (Preprocessed) data, better than ridge
+set.seed(100)
+# Find the best lambda using cross-validation
+cv.lasso=cv.glmnet(x.trainm,y.trainm,alpha=1) 
+# Fit the final model on the training data
+lasso.fit=glmnet(x.trainm,y.trainm,alpha=1,lambda = cv.lasso$lambda.min)
+```
+
+```{r}
+# Check RMSE
+lasso.pred=predict(lasso.fit,newx=x.testm) 
+RMSE(lasso.pred,te$SalePrice)
+```
+
+
+
+```{r,cache=TRUE}
+#Elastic Net: best with (Preprocessed) data, slightly worse than lasso
+
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+train_control <- trainControl(method = "repeatedcv",
+                              number = 5,
+                              repeats = 3,
+                              search = "random",
+                              )
+
+# Train the model
+elastic.fit <- train(SalePrice ~ .,
+                           data = tr,
+                           method = "glmnet",
+                           tuneLength = 25,
+                           trControl = train_control,
+                           metric = "RMSE")
+
+stopCluster(cl)
+```
+
+```{r}
+# Check RMSE:
+elastic.pred<- predict(elastic.fit, te)
+RMSE(elastic.pred,te$SalePrice)
+```
+
+
+```{r,cache=TRUE}
+#Random Forest: best with (original) data
+set.seed(100)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+rf.control <- trainControl(method='repeatedcv', 
+                           repeats=5,
+                           number=3)
+
+tunegrid <- expand.grid(.mtry=5:20)
+
+rf.fit <- train(SalePrice~., 
+                      data=full[train,][partition,], 
+                      method='rf', 
+                      metric='RMSE', 
+                      tuneGrid=tunegrid, 
+                      trControl=rf.control)
+
+stopCluster(cl)
+```
+
+```{r}
+print(rf.fit)
+```
+
+```{r}
+rf.pred=predict(rf.fit,full[train,][-partition,])
+RMSE(rf.pred,te$SalePrice)
+```
+
+```{r}
+#Visualizing feature importance
+importance <- varImp(rf.fit)$importance
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(importance$Overall,2))
+varImportance
+```
+
+
+```{r}
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance[importance>2.5,], aes(x = reorder(Variables, Importance), 
+    y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+    hjust=0, vjust=0.55, size = 4, colour = 'red') +
+  labs(x = 'Variables') +
+  coord_flip()
+```
+
+
+```{r,cache=TRUE}
+# Dimentional reduction using FAMD
+full.f <- full[,names(full) %in% c("MSSubClass","MSZoning","LotArea","LandContour","Neighborhood","BldgType","HouseStyle","OverallQual","OverallCond","YearBuilt","YearRemodAdd","Exterior1st","Exterior2nd","MasVnrType","MasVnrArea","ExterQual","ExterCond","Foundation","BsmtQual","BsmtCond","BsmtFinType1","BsmtFinSF1","BsmtFinType2","BsmtUnfSF","TotalBsmtSF","HeatingQC","CentralAir","X1stFlrSF","X2ndFlrSF","GrLivArea","BsmtFullBath","FullBath","HalfBath","BedroomAbvGr","KitchenAbvGr","KitchenQual","TotRmsAbvGrd","Functional","Fireplaces","FireplaceQu","GarageType","GarageYrBlt","GarageFinish","GarageCars","GarageArea","GarageQual","GarageCond","PavedDrive","WoodDeckSF","OpenPorchSF","Fence"
+)]
+
+pred <- preProcess(full.f[train,],method=c("BoxCox","center","scale"))
+full.f[train,] <- predict(pred,full.f[train,])
+full.f[test,] <- predict(pred,full.f[test,])
+
+x <- dummyVars( ~., data = full.f,fullRank=TRUE)
+full.f<- data.frame(predict(x,newdata=full.f))
+
+for(s in 1:146){
+  if(sum(unique(full.f[,s]))==1){
+    full.f[,s] <- as.factor(full.f[,s])
+  }
+}
+```
+
+```{r,cache=TRUE}
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+full.f <- FAMD(full.f,graph = FALSE, ncp=50)
+
+stopCluster(cl)
+```
+
+```{r,cache=TRUE}
+eig.val <- get_eigenvalue(full.f)
+eig.val
+fviz_screeplot(full.f)
+```
+
+```{r,cache=TRUE}
+full.fa <- data.frame(full.f$ind$coord)
+full.fa$SalePrice <- full$SalePrice
+head(full.fa)
+```
+                 
+                 
+                 
+
+```{r,cache=TRUE}
+#pcr: best with (feature selected, preprocessed)(famd) data
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+pcr.control <- trainControl(method = "repeatedcv",
+                              number = 5,
+                              repeats = 3,
+                              search = "random",
+                              )
+
+# Train the model
+pcr.fit <- train(SalePrice ~ .,
+                           data = tr,
+                           method = "pcr",
+                           tuneLength = 25,
+                           trControl = pcr.control,
+                           metric = "RMSE")
+
+stopCluster(cl)
+```
+
+```{r,cache=TRUE}
+pcr.pred=predict(pcr.fit,te) 
+RMSE(pcr.pred,te$SalePrice)
+```
+
+```{r}
+#PLS
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+pls.control <- trainControl(method = "repeatedcv",
+                              number = 5,
+                              repeats = 3,
+                              search = "random",
+                              )
+
+# Train the model
+pls.fit <- train(SalePrice ~ .,
+                           data = tr,
+                           method = "pls",
+                           tuneLength = 25,
+                           trControl = pls.control,
+                           metric = "RMSE")
+
+stopCluster(cl)
+
+```
+
+
+```{r}
+pls.pred=predict(pls.fit,te,ncomp=12) 
+RMSE(pls.pred,te$SalePrice)
+```
+
+
+## GBM
+```{r}
+set.seed(100)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+gbm.control <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           repeats = 3)
+#The best strategy appears to be to set v to be very small (v < 0.1) and then choose M by early stopping.
+#First set the learning rate as small as possible as your time permits, I choose 0.01.
+#Then increase number of trees until RMSE shows little improvement, I choose 2000.
+#Finally, tune the other two parameters, until a satisfying result.
+gbm.grid <-  expand.grid(interaction.depth = c(5,7,9), 
+                        n.trees = c(1000,1500), 
+                        shrinkage = 0.01,
+                        n.minobsinnode = c(4,6,8))
+                        
+gbm.fit <- train(SalePrice ~ ., data = tr, 
+                 method = "gbm", 
+                 preProc = "zv",
+                 trControl = gbm.control, 
+                 tuneGrid = gbm.grid)
+stopCluster(cl)
+```
+
+
+```{r}
+gbm.fit
+```
+
+```{r}
+plot(gbm.fit)  
+```
+
+
+```{r}
+gbm.pred=predict(gbm.fit,te)
+RMSE(gbm.pred,te$SalePrice)
+```
+RMSE:
+(famd):0.1430072
+(preprocessed): 0.1372258
+(feature selected, preprocessed): 0.1291999
+(original): 0.123626
+
+
+```{r}
+#GBM
+set.seed(100)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+gbm.control <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           repeats = 3)
+
+gbm.grid <-  expand.grid(interaction.depth = c(9,11,13), 
+                        n.trees = 2000, 
+                        shrinkage = 0.01,
+                        n.minobsinnode = c(2,3,4))
+
+gbm.fit2 <- train(SalePrice ~ ., data = full[train,], 
+                 method = "gbm", 
+                 preProc = "zv",
+                 trControl = gbm.control, 
+                 tuneGrid = gbm.grid)
+stopCluster(cl)
+```
+
+```{r}
+plot(gbm.fit2, metric = "RMSE", plotType = "level",scales = list(x = list(rot = 90)))
+```
+
+
+```{r}
+#Output the result:
+gbm.pred2 <- predict(gbm.fit2, full[test,-69])
+
+final <- data.frame(Id = row.names(full[test,]), SalePrice = as.integer(round(exp(gbm.pred2) / 500) * 500))
+write.csv(final, "/Users/apple/Desktop/submission.csv", row.names = F)
+head(final$SalePrice)
+```
+
+## Kaggle Score: 0.12769
+## Kaggle Rank: 1226
+
+
+## XGBoost
+
+```{r}
+#Number of trees:100-1000,Tree depth:4-10, Learning rate.
+#Row sampling:0.5-1.0, column sampling:0.3-0.5, min leaf weight:1/sqrt(event rate), min split gain:0
+#early stopping
+
+#Create matrices from the data frames
+trainData<- as.matrix(tr, rownames.force=NA)
+testData<- as.matrix(te, rownames.force=NA)
+
+#Turn the matrices into sparse matrices
+xgb.tr <- as(trainData, "sparseMatrix")
+xgb.te <- as(testData, "sparseMatrix")
+```
+
+```{r}
+trainD <- xgb.DMatrix(data = xgb.tr[,-205], label = xgb.tr[,"SalePrice"]) #Convert to xgb.DMatrix format
+```
+
+```{r}
+#Train the model
+
+#Choose the parameters for the model
+param <- list(colsample_bytree = .7,
+             subsample = .7,
+             booster = "gbtree",
+             max_depth = 10,
+             min_child_weight = 0,
+             eta = 0.02,
+             eval_metric = "rmse",
+             objective="reg:linear",
+             early_stopping_rounds = 10)
+
+#Train the model using those parameters
+bstSparse <-
+  xgb.train(params = param,
+            data = trainD,
+            nrounds = 600,
+            watchlist = list(train = trainD),
+            verbose = TRUE,
+            print_every_n = 50,
+            nthread = 2)
+```
+
+```{r}
+testD <- xgb.DMatrix(data = xgb.te[,-205])
+
+xgb.pred <- predict(bstSparse, testD) 
+
+RMSE(xgb.pred,te$SalePrice)
+```
+
+
+```{r}
+#Retrain on the full sample
+
+#Create matrices from the data frames
+retrainData<- as.matrix(full.t[train,], rownames.force=NA)
+
+#Turn the matrices into sparse matrices
+retrain <- as(retrainData, "sparseMatrix")
+
+retrainD <- xgb.DMatrix(data = retrain[,-205], label = retrain[,"SalePrice"])
+```
+
+```{r}
+set.seed(100)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+xgb.ctrl <- trainControl(method = "cv",
+                           number = 5)
+
+xgb.grid <- expand.grid(nrounds = 2000,
+                        max_depth = c(3,4,5),
+                        eta = 0.01,
+                        gamma = c(0.0),
+                        colsample_bytree = c(0.7,0.5),
+                        min_child_weight=c(10),
+                        subsample=c(0.9,0.7)
+)
+
+xgb.fit <-train(SalePrice ~.,
+                 data=full.t[train,],
+                 method="xgbTree",
+                 metric = "RMSE",
+                 trControl=xgb.ctrl,
+                 tuneGrid=xgb.grid
+)
+
+stopCluster(cl)
+```
+
+```{r}
+plot(xgb.fit)  
+```
+
+```{r}
+xgb.pred <- predict(xgb.fit, full.t[test,-205])
+
+final <- data.frame(Id = row.names(full.t[test,]), SalePrice = as.integer(round(exp(xgb.pred) / 500) * 500))
+```
+
+```{r}
+#Output the result:
+write.csv(final, "/Users/apple/Desktop/submission.csv", row.names = F)
+head(final$SalePrice)
+```
+
